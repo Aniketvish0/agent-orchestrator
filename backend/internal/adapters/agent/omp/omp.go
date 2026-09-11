@@ -125,11 +125,14 @@ func (p *Plugin) NativeConversationExists(ctx context.Context, _ ports.SessionRe
 	}
 	configDir := strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
 	if configDir == "" {
-		var ok bool
-		configDir, ok = ompConfigDir()
-		if !ok {
-			return false, nil
+		configDir = strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	}
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false, err
 		}
+		configDir = filepath.Join(home, ".omp", "agent")
 	}
 	found := false
 	sessionsDir := filepath.Join(configDir, "sessions")
