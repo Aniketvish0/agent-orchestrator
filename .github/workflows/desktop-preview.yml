@@ -1,0 +1,226 @@
+# .github/workflows/desktop-preview.yml
+name: Desktop preview (PR artifacts)
+
+# Label-triggered unsigned desktop build for pull request review.
+# Builds the Electron app for the labeled OS targets at the PR head SHA,
+# uploads each installer as a 7-day workflow artifact, and comments the run
+# link on the PR. Creates no release, references no secrets, mutates nothing.
+# macOS output is intentionally UNSIGNED: forge.config.ts only activates
+# osxSign/osxNotarize when the Apple env vars are present, and this workflow
+# never sets them. The private ao-releases conductor remains the only system
+# allowed to publish stable, nightly, or preview releases
+# (frontend/docs/desktop-release.md, "Hard rule: exactly one publisher").
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+# A push must cancel a stale in-flight build, but adding an unrelated label
+# must not cancel one. Runs that skip every build job leave no artifacts and
+# post no comment.
+concurrency:
+  group: desktop-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'preview:mac' || github.event.label.name == 'preview:win' }}
+
+env:
+  VITE_WORKOS_CLIENT_ID: ${{ vars.VITE_WORKOS_CLIENT_ID }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin-arm64
+            artifact: preview-mac-arm64
+            label: preview:mac
+          - os: windows-latest
+            platform: win32-x64
+            artifact: preview-win
+            label: preview:win
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Same-repo only: forks cannot use the repo vars this build needs, and the
+    # version stamp below names the PR explicitly. A labeled event runs only
+    # the platform whose label was added; synchronize runs each labeled one.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, matrix.label) &&
+      (github.event.action != 'labeled' || github.event.label.name == matrix.label)
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            packages/product-ui/package-lock.json
+      # The daemon is compiled by build-daemon.mjs during premake, so the Go
+      # toolchain must be present and pinned on every runner.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: npm ci
+      - name: Install product UI dependencies
+        run: npm ci
+        working-directory: packages/product-ui
+      - name: Verify WorkOS build configuration
+        shell: bash
+        run: |
+          if [ -z "$VITE_WORKOS_CLIENT_ID" ]; then
+            echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
+            exit 1
+          fi
+      # Stamp a traceable preview version into package.json for this build,
+      # dropping any +build metadata.
+      - name: Stamp version
+        shell: bash
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          base="$(node -p "require('./package.json').version")"
+          version="${base}-pr.${PR_NUMBER}.${GITHUB_RUN_NUMBER}"
+          node -e "const fs=require('fs'); const p=require('./package.json'); p.version=process.argv[1]; fs.writeFileSync('./package.json', JSON.stringify(p,null,'\t')+'\n');" "$version"
+          echo "Preview version: $version" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build (unsigned, no publish)
+        shell: bash
+        env:
+          # Bake the update feed's owner/repo from the repo this build runs in.
+          # Without this, forge.config.ts falls back to DEFAULT_RELEASE_REPO,
+          # which went stale across an org transfer and left builds pointing
+          # their updater at the old owner (#3523).
+          AO_RELEASE_REPO: ${{ github.repository }}
+        run: npm run make
+      - name: Verify baked update feed repo
+        # app-update.yml is what electron-updater reads at runtime to build the
+        # feed URL. If the baked owner/repo ever diverges from this repo (org
+        # rename, fork misconfig), fail here instead of shipping a build whose
+        # updater points elsewhere (#3523).
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(sed -n 's/^owner:[[:space:]]*//p' app-update.yml)"
+          repo="$(sed -n 's/^repo:[[:space:]]*//p' app-update.yml)"
+          echo "baked feed: $owner/$repo (expected $GITHUB_REPOSITORY)"
+          if [ "$owner/$repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::app-update.yml bakes $owner/$repo but this build runs in $GITHUB_REPOSITORY" >&2
+            exit 1
+          fi
+      - name: Collect installer
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-preview
+          case "$PLATFORM" in
+            darwin-arm64)
+              # maker-zip output (updater-capable) plus the first-install dmg.
+              src_zip="$(find out/make/zip/darwin -name '*.zip' | head -n1)"
+              if [ -z "$src_zip" ]; then echo "no zip output found for $PLATFORM" >&2; exit 1; fi
+              cp "$src_zip" "dist-preview/agent-orchestrator-$PLATFORM.zip"
+              src_dmg="$(find out/make -maxdepth 1 -name '*.dmg' | head -n1)"
+              if [ -n "$src_dmg" ]; then cp "$src_dmg" "dist-preview/agent-orchestrator-$PLATFORM.dmg"; fi
+              ;;
+            win32-x64)
+              # NSIS (electron-builder) output: out/make/<productName> Setup <version>.exe
+              src="$(find out/make -maxdepth 1 -name '*Setup*.exe' | head -n1)"
+              if [ -z "$src" ]; then echo "no build output found for $PLATFORM" >&2; exit 1; fi
+              cp "$src" "dist-preview/agent-orchestrator-$PLATFORM.exe"
+              ;;
+            *)
+              echo "unknown platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          ls -la dist-preview >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: frontend/dist-preview/agent-orchestrator-${{ matrix.platform }}.*
+          retention-days: 7
+          if-no-files-found: error
+
+  # Runs no PR code: only posts the already-uploaded artifact run link.
+  comment:
+    name: Comment preview link
+    needs: build
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const labels = pullRequest.labels.map((label) => label.name);
+            const hasPreviewLabel = labels.includes('preview:mac') || labels.includes('preview:win');
+            if (
+              pullRequest.head.sha !== process.env.HEAD_SHA ||
+              pullRequest.state !== 'open' ||
+              !hasPreviewLabel
+            ) {
+              core.info('Skipping the outdated preview comment.');
+              return;
+            }
+
+            const marker = '<!-- desktop-preview -->';
+            const body = [
+              marker,
+              '### Desktop preview',
+              '',
+              `[Download installers from this run](${process.env.RUN_URL}) (GitHub sign-in required)`,
+              '',
+              `Commit: ${process.env.HEAD_SHA.slice(0, 7)}`,
+              'Artifacts: `preview-mac-arm64` (zip + dmg), `preview-win` (exe). Only labeled platforms are built.',
+              'Artifacts expire after 7 days.',
+              '',
+              'Unsigned builds. On macOS clear quarantine before opening, on Windows expect SmartScreen.',
+              'These installers prove the build works. They do not test the updater feed.',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+            }
