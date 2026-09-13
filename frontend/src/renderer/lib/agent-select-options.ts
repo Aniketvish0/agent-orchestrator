@@ -1,3 +1,5 @@
+import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace";
+
 export type AgentInfo = {
 	authentication: {
 		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
@@ -13,6 +15,8 @@ export type AgentInfo = {
 	lastUsedAt?: string | null;
 	usageCount: number;
 };
+
+export type RoleSession = Pick<WorkspaceSession, "id" | "provider" | "kind" | "createdAt">;
 
 export const DEFAULT_AGENT_PRIORITY = ["claude-code", "codex", "cursor", "opencode", "aider"] as const;
 export const DEFAULT_AGENT_PRIORITY_RANK = new Map<string, number>(
@@ -57,6 +61,43 @@ export function agentUsageCompare(a: AgentInfo, b: AgentInfo): number {
 	const byRecency = (b.lastUsedAt ?? "").localeCompare(a.lastUsedAt ?? "");
 	if (byRecency !== 0) return byRecency;
 	return 0;
+}
+
+export function defaultAuthorizedAgentForRole(
+	authorizedAgents: AgentInfo[],
+	sessions: RoleSession[],
+	role: "worker" | "orchestrator",
+): string {
+	const eligible = new Set(authorizedAgents.map((agent) => agent.id));
+	const usage = new Map<string, { count: number; latest: number }>();
+	for (const session of sessions) {
+		if (!isRoleSession(session, role) || !eligible.has(session.provider)) continue;
+		const prev = usage.get(session.provider) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
+		const at = session.createdAt ? Date.parse(session.createdAt) : Number.NaN;
+		usage.set(session.provider, {
+			count: prev.count + 1,
+			latest: Number.isNaN(at) ? prev.latest : Math.max(prev.latest, at),
+		});
+	}
+	const empty = { count: 0, latest: Number.NEGATIVE_INFINITY };
+	return [...authorizedAgents]
+		.sort((a, b) => {
+			const aUsage = usage.get(a.id) ?? empty;
+			const bUsage = usage.get(b.id) ?? empty;
+			return (
+				bUsage.count - aUsage.count ||
+				bUsage.latest - aUsage.latest ||
+				(DEFAULT_AGENT_PRIORITY_RANK.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+					(DEFAULT_AGENT_PRIORITY_RANK.get(b.id) ?? Number.MAX_SAFE_INTEGER) ||
+				agentLabelCompare(a, b)
+			);
+		})[0]?.id ?? "";
+}
+
+// Role matching reuses the board's definition: orchestrators are explicit,
+// everything else counts as worker history.
+function isRoleSession(session: RoleSession, role: "worker" | "orchestrator"): boolean {
+	return role === "orchestrator" ? isOrchestratorSession(session) : !isOrchestratorSession(session);
 }
 
 function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "statusTone"> {

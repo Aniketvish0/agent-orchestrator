@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../api/schema";
-import { buildRankedAgentOptions } from "./agent-select-options";
+import { buildRankedAgentOptions, defaultAuthorizedAgentForRole, type RoleSession } from "./agent-select-options";
 
 type Agent = components["schemas"]["AgentReadinessSnapshot"];
 
@@ -113,5 +113,96 @@ describe("buildRankedAgentOptions", () => {
 		});
 
 		expect(option).toMatchObject({ disabled: false, status: "" });
+	});
+});
+
+describe("defaultAuthorizedAgentForRole", () => {
+	const agents = [agent("claude-code"), agent("codex")];
+
+	function session(
+		provider: RoleSession["provider"],
+		kind: "worker" | "orchestrator" | undefined,
+		createdAt?: string,
+		id = `${provider}-${kind ?? "unknown"}-${createdAt ?? "no-time"}`,
+	): RoleSession {
+		return { id, provider, kind, createdAt };
+	}
+
+	it("infers each role from its own history", () => {
+		const sessions = [
+			session("codex", "worker", "2026-08-01T10:00:00Z"),
+			session("codex", "worker", "2026-08-02T10:00:00Z"),
+			session("claude-code", "worker", "2026-08-03T10:00:00Z"),
+			session("claude-code", "orchestrator", "2026-08-04T10:00:00Z"),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "orchestrator")).toBe("claude-code");
+	});
+
+	it("breaks equal counts by the newest session", () => {
+		const sessions = [
+			session("claude-code", "worker", "2026-08-01T10:00:00Z"),
+			session("codex", "worker", "2026-08-02T10:00:00Z"),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+	});
+
+	it("counts legacy orchestrator ids and kind-less sessions like the board does", () => {
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[{ id: "abc-orchestrator", provider: "codex", createdAt: "2026-08-02T10:00:00Z" }],
+				"orchestrator",
+			),
+		).toBe("codex");
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[
+					session("codex", undefined, "2026-08-01T10:00:00Z"),
+					session("codex", undefined, "2026-08-02T10:00:00Z"),
+				],
+				"worker",
+			),
+		).toBe("codex");
+	});
+
+	it("skips unavailable historical winners and falls back to Claude Code", () => {
+		const sessions = [
+			session("goose", "worker", "2026-08-01T10:00:00Z"),
+			session("goose", "worker", "2026-08-02T10:00:00Z"),
+			session("codex", "worker", "2026-08-03T10:00:00Z"),
+		];
+
+		expect(defaultAuthorizedAgentForRole(agents, sessions, "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole(agents, [], "worker")).toBe("claude-code");
+	});
+
+	it("stays usable when Claude Code is unavailable", () => {
+		expect(defaultAuthorizedAgentForRole([agent("codex")], [], "worker")).toBe("codex");
+		expect(defaultAuthorizedAgentForRole([], [], "worker")).toBe("");
+	});
+
+	it("counts sessions without timestamps for frequency but not recency", () => {
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[
+					session("codex", "worker"),
+					session("codex", "worker"),
+					session("claude-code", "worker", "2026-08-01T10:00:00Z"),
+				],
+				"worker",
+			),
+		).toBe("codex");
+		expect(
+			defaultAuthorizedAgentForRole(
+				agents,
+				[session("codex", "worker"), session("claude-code", "worker", "2026-08-01T10:00:00Z")],
+				"worker",
+			),
+		).toBe("claude-code");
 	});
 });
