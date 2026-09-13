@@ -46,6 +46,10 @@ async function chooseOption(trigger: HTMLElement, optionName: string) {
 	await userEvent.click(await screen.findByRole("option", { name: new RegExp(escaped, "i") }));
 }
 
+function hoursAgo(hours: number): string {
+	return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
 describe("CreateProjectAgentSheet", () => {
 	it("shakes the active sheet when creation fails", () => {
 		renderSheet(undefined, undefined, { shake: true });
@@ -98,9 +102,9 @@ describe("CreateProjectAgentSheet", () => {
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w1", kind: "worker", provider: "codex", createdAt: "2026-08-01T10:00:00Z" },
-					{ id: "w2", kind: "worker", provider: "codex", createdAt: "2026-08-02T10:00:00Z" },
-					{ id: "o1", kind: "orchestrator", provider: "claude-code", createdAt: "2026-08-03T10:00:00Z" },
+					{ id: "w1", kind: "worker", provider: "codex", createdAt: hoursAgo(5) },
+					{ id: "w2", kind: "worker", provider: "codex", createdAt: hoursAgo(4) },
+					{ id: "o1", kind: "orchestrator", provider: "claude-code", createdAt: hoursAgo(3) },
 				],
 			},
 		]);
@@ -120,7 +124,7 @@ describe("CreateProjectAgentSheet", () => {
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
-				sessions: [{ id: "w1", kind: "worker", provider: "claude-code", createdAt: "2026-08-01T10:00:00Z" }],
+				sessions: [{ id: "w1", kind: "worker", provider: "claude-code", createdAt: hoursAgo(3) }],
 			},
 		]);
 		const onSubmit = renderSheet(vi.fn().mockResolvedValue(undefined), queryClient);
@@ -129,8 +133,8 @@ describe("CreateProjectAgentSheet", () => {
 		queryClient.setQueryData(workspaceQueryKey, [
 			{
 				sessions: [
-					{ id: "w2", kind: "worker", provider: "claude-code", createdAt: "2026-08-02T10:00:00Z" },
-					{ id: "w3", kind: "worker", provider: "claude-code", createdAt: "2026-08-03T10:00:00Z" },
+					{ id: "w2", kind: "worker", provider: "claude-code", createdAt: hoursAgo(2) },
+					{ id: "w3", kind: "worker", provider: "claude-code", createdAt: hoursAgo(1) },
 				],
 			},
 		]);

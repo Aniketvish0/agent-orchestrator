@@ -18,6 +18,10 @@ export type AgentInfo = {
 
 export type RoleSession = Pick<WorkspaceSession, "id" | "provider" | "kind" | "createdAt">;
 
+// Only recent habits drive onboarding defaults: a harness used heavily
+// months ago must not outvote what the user reaches for now.
+export const ROLE_HISTORY_WINDOW_MS = 48 * 60 * 60 * 1000;
+
 export const DEFAULT_AGENT_PRIORITY = ["claude-code", "codex", "cursor", "opencode", "aider"] as const;
 export const DEFAULT_AGENT_PRIORITY_RANK = new Map<string, number>(
 	DEFAULT_AGENT_PRIORITY.map((agent, index) => [agent, index]),
@@ -70,14 +74,13 @@ export function defaultAuthorizedAgentForRole(
 ): string {
 	const eligible = new Set(authorizedAgents.map((agent) => agent.id));
 	const usage = new Map<string, { count: number; latest: number }>();
+	const cutoff = Date.now() - ROLE_HISTORY_WINDOW_MS;
 	for (const session of sessions) {
 		if (!isRoleSession(session, role) || !eligible.has(session.provider)) continue;
-		const prev = usage.get(session.provider) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
 		const at = session.createdAt ? Date.parse(session.createdAt) : Number.NaN;
-		usage.set(session.provider, {
-			count: prev.count + 1,
-			latest: Number.isNaN(at) ? prev.latest : Math.max(prev.latest, at),
-		});
+		if (Number.isNaN(at) || at < cutoff) continue;
+		const prev = usage.get(session.provider) ?? { count: 0, latest: Number.NEGATIVE_INFINITY };
+		usage.set(session.provider, { count: prev.count + 1, latest: Math.max(prev.latest, at) });
 	}
 	const empty = { count: 0, latest: Number.NEGATIVE_INFINITY };
 	return [...authorizedAgents]
