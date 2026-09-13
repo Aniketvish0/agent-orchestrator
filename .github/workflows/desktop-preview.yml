@@ -1,15 +1,11 @@
 # .github/workflows/desktop-preview.yml
 name: Desktop preview (PR artifacts)
 
-# Label-triggered unsigned desktop build for pull request review.
-# Builds the Electron app for the labeled OS targets at the PR head SHA,
-# uploads each installer as a 7-day workflow artifact, and comments the run
-# link on the PR. Creates no release, references no secrets, mutates nothing.
-# macOS output is intentionally UNSIGNED: forge.config.ts only activates
-# osxSign/osxNotarize when the Apple env vars are present, and this workflow
-# never sets them. The private ao-releases conductor remains the only system
-# allowed to publish stable, nightly, or preview releases
-# (frontend/docs/desktop-release.md, "Hard rule: exactly one publisher").
+# Label-triggered unsigned desktop build for PR review. Uploads 7-day
+# workflow artifacts and comments the run link. Creates no release and uses
+# no secrets; the ao-releases conductor stays the only publisher
+# (frontend/docs/desktop-release.md). Unsigned: forge.config.ts signs only
+# when Apple env vars are present, which this workflow never sets.
 
 on:
   pull_request:
@@ -18,9 +14,7 @@ on:
 permissions:
   contents: read
 
-# A push must cancel a stale in-flight build, but adding an unrelated label
-# must not cancel one. Runs that skip every build job leave no artifacts and
-# post no comment.
+# Pushes cancel stale builds; unrelated labels must not cancel a running one.
 concurrency:
   group: desktop-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'preview:mac' || github.event.label.name == 'preview:win' }}
@@ -44,9 +38,7 @@ jobs:
             label: preview:win
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Same-repo only: forks cannot use the repo vars this build needs, and the
-    # version stamp below names the PR explicitly. A labeled event runs only
-    # the platform whose label was added; synchronize runs each labeled one.
+    # Same-repo only; a labeled event runs just its platform.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       contains(github.event.pull_request.labels.*.name, matrix.label) &&
@@ -65,8 +57,7 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             packages/product-ui/package-lock.json
-      # The daemon is compiled by build-daemon.mjs during premake, so the Go
-      # toolchain must be present and pinned on every runner.
+      # build-daemon.mjs compiles the Go daemon during premake.
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
@@ -82,8 +73,6 @@ jobs:
             echo "::error::Repository variable VITE_WORKOS_CLIENT_ID is required for desktop artifacts." >&2
             exit 1
           fi
-      # Stamp a traceable preview version into package.json for this build,
-      # dropping any +build metadata.
       - name: Stamp version
         shell: bash
         env:
@@ -96,17 +85,10 @@ jobs:
       - name: Build (unsigned, no publish)
         shell: bash
         env:
-          # Bake the update feed's owner/repo from the repo this build runs in.
-          # Without this, forge.config.ts falls back to DEFAULT_RELEASE_REPO,
-          # which went stale across an org transfer and left builds pointing
-          # their updater at the old owner (#3523).
+          # forge.config.ts falls back to DEFAULT_RELEASE_REPO without this (#3523).
           AO_RELEASE_REPO: ${{ github.repository }}
         run: npm run make
       - name: Verify baked update feed repo
-        # app-update.yml is what electron-updater reads at runtime to build the
-        # feed URL. If the baked owner/repo ever diverges from this repo (org
-        # rename, fork misconfig), fail here instead of shipping a build whose
-        # updater points elsewhere (#3523).
         shell: bash
         run: |
           set -euo pipefail
@@ -126,7 +108,6 @@ jobs:
           mkdir -p dist-preview
           case "$PLATFORM" in
             darwin-arm64)
-              # maker-zip output (updater-capable) plus the first-install dmg.
               src_zip="$(find out/make/zip/darwin -name '*.zip' | head -n1)"
               if [ -z "$src_zip" ]; then echo "no zip output found for $PLATFORM" >&2; exit 1; fi
               cp "$src_zip" "dist-preview/agent-orchestrator-$PLATFORM.zip"
@@ -134,7 +115,6 @@ jobs:
               if [ -n "$src_dmg" ]; then cp "$src_dmg" "dist-preview/agent-orchestrator-$PLATFORM.dmg"; fi
               ;;
             win32-x64)
-              # NSIS (electron-builder) output: out/make/<productName> Setup <version>.exe
               src="$(find out/make -maxdepth 1 -name '*Setup*.exe' | head -n1)"
               if [ -z "$src" ]; then echo "no build output found for $PLATFORM" >&2; exit 1; fi
               cp "$src" "dist-preview/agent-orchestrator-$PLATFORM.exe"
@@ -153,7 +133,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Runs no PR code: only posts the already-uploaded artifact run link.
+  # Posts the run link only; runs no PR code.
   comment:
     name: Comment preview link
     needs: build
@@ -164,7 +144,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -176,11 +156,13 @@ jobs:
               pull_number: context.payload.pull_request.number,
             });
             const labels = pullRequest.labels.map((label) => label.name);
-            const hasPreviewLabel = labels.includes('preview:mac') || labels.includes('preview:win');
+            const built = [];
+            if (labels.includes('preview:mac')) built.push('`preview-mac-arm64` (zip + dmg)');
+            if (labels.includes('preview:win')) built.push('`preview-win` (exe)');
             if (
               pullRequest.head.sha !== process.env.HEAD_SHA ||
               pullRequest.state !== 'open' ||
-              !hasPreviewLabel
+              built.length === 0
             ) {
               core.info('Skipping the outdated preview comment.');
               return;
@@ -194,7 +176,7 @@ jobs:
               `[Download installers from this run](${process.env.RUN_URL}) (GitHub sign-in required)`,
               '',
               `Commit: ${process.env.HEAD_SHA.slice(0, 7)}`,
-              'Artifacts: `preview-mac-arm64` (zip + dmg), `preview-win` (exe). Only labeled platforms are built.',
+              `Artifacts: ${built.join(', ')}.`,
               'Artifacts expire after 7 days.',
               '',
               'Unsigned builds. On macOS clear quarantine before opening, on Windows expect SmartScreen.',
