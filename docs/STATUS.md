@@ -65,10 +65,11 @@ surface (`npm run sqlc`, `npm run api`).
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
   (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, and Qwen.
-  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.15.0 or newer;
-  like Pi, Qwen Code's ACP mode ignores `--approval-mode` and never raises a
-  permission request, so AO admits Qwen Chat only under the explicit
-  bypass-permissions fallback. OMP Chat uses native `omp acp` and requires OMP
+  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.15.0 or newer.
+  Qwen Code's ACP mode enforces approval modes over `session/request_permission`
+  (verified live: a non-read-only shell under auto-edit asks), so AO maps its
+  permission modes onto Qwen's (default to Ask Permissions) and admits Qwen Chat
+  in every mode. OMP Chat uses native `omp acp` and requires OMP
   15.0.0 or newer. Pi's independently installed pi-acp adapter does not enforce
   approval modes, so AO admits Pi Chat only after the user explicitly chooses the
   per-session bypass-permissions fallback. The binding reuses the existing Pi config environment and auth

@@ -133,3 +133,68 @@ func envMap() map[string]string {
 	}
 	return out
 }
+
+// Run explicitly with AO_LIVE_QWEN_ACP=1. Pins the approval channel: a
+// non-read-only shell under auto-edit must raise an approval request instead
+// of auto-executing. Fails if a future Qwen build stops asking.
+func TestLiveQwenACPApprovalChannel(t *testing.T) {
+	if os.Getenv("AO_LIVE_QWEN_ACP") != "1" {
+		t.Skip("set AO_LIVE_QWEN_ACP=1 to run against the local Qwen Code account")
+	}
+
+	driver := New(qwen.New(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := driver.Probe(ctx); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	scratch, err := os.MkdirTemp("", "qwen-approval-live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(scratch)
+	sentinel := filepath.Join(scratch, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("do not delete without asking"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := driver.Start(ctx, ports.ChatStartConfig{
+		SessionID: "live-qwen-acp-approval", DataDir: t.TempDir(), WorkspacePath: scratch,
+		Env: envMap(), Permissions: ports.PermissionModeAcceptEdits,
+		SystemPrompt: "Answer in one short sentence.",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conversation.Close()
+
+	ref, err := conversation.SendTurn(ctx, ports.ChatUserMessage{
+		Text:            "Delete sentinel.txt with rm and report the exit status.",
+		ClientMessageID: "live-approval-1", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := conversation.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+
+	for {
+		select {
+		case event, ok := <-conversation.Events():
+			if !ok {
+				t.Fatal("controller closed before any approval request")
+			}
+			if event.Kind == ports.ChatEventApprovalRequested {
+				if len(event.Decisions) == 0 {
+					t.Fatal("approval request carries no decisions")
+				}
+				return
+			}
+			if event.Kind == ports.ChatEventTurnCompleted {
+				t.Fatalf("turn completed state=%q without asking", event.TurnState)
+			}
+		case <-ctx.Done():
+			t.Fatalf("live approval turn timed out: %v", ctx.Err())
+		}
+	}
+}

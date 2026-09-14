@@ -52,11 +52,11 @@ func TestConfigureUsesNativeACP(t *testing.T) {
 
 func TestSessionModeMapsQwenVocabulary(t *testing.T) {
 	tests := map[ports.PermissionMode]string{
-		ports.PermissionModeDefault:           "",
+		ports.PermissionModeDefault:           "default",
 		ports.PermissionModeAcceptEdits:       "auto-edit",
 		ports.PermissionModeAuto:              "auto",
 		ports.PermissionModeBypassPermissions: "yolo",
-		"":                                    "",
+		"":                                    "default",
 	}
 	for permission, want := range tests {
 		if got := sessionMode(permission); got != want {
@@ -102,8 +102,8 @@ func TestDriverReusesQwenPluginForProbe(t *testing.T) {
 			t.Errorf("missing capability %q", capability)
 		}
 	}
-	if caps.Has(ports.ChatCapabilityApprovals) {
-		t.Error("qwen must not advertise approvals: Qwen ACP ignores --approval-mode and never asks")
+	if !caps.Has(ports.ChatCapabilityApprovals) {
+		t.Error("qwen must advertise approvals: Qwen ACP enforces approval modes over session/request_permission")
 	}
 	if plugin.resolveCalls != 1 || plugin.authCalls != 1 || versionCalls != 1 {
 		t.Fatalf("plugin calls = resolve %d, auth %d, version %d; want one each",
@@ -122,7 +122,7 @@ func TestDriverRejectsUnauthenticatedQwen(t *testing.T) {
 	}
 }
 
-func TestDriverAdmitsChatOnlyUnderBypass(t *testing.T) {
+func TestDriverAdmitsAskModes(t *testing.T) {
 	driver := newDriver(
 		&fakePlugin{status: ports.AgentAuthStatusAuthorized, binary: "/usr/bin/qwen"},
 		func(context.Context, string) error { return nil },
@@ -132,18 +132,21 @@ func TestDriverAdmitsChatOnlyUnderBypass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
-	// Qwen ACP ignores --approval-mode, so the only production-floor gap is the
-	// approval channel it never opens.
-	if missing := ports.MissingProductionCapabilities(caps); !reflect.DeepEqual(missing, []ports.ChatCapability{ports.ChatCapabilityApprovals}) {
-		t.Fatalf("production floor gap = %v, want [approvals]", missing)
+	// Qwen ACP enforces approval modes over session/request_permission
+	// (verified live: non-read-only shell under auto-edit asks), so every
+	// permission mode clears the production floor.
+	if missing := ports.MissingProductionCapabilities(caps); len(missing) != 0 {
+		t.Fatalf("production floor gap = %v, want none", missing)
 	}
-	// A default (ask-me) Chat is refused because that missing channel is required;
-	// bypass-permissions opts out of approvals, so admission is clean.
-	if missing := ports.MissingCapabilitiesForPermissions(caps, ports.PermissionModeDefault); len(missing) == 0 {
-		t.Fatal("default-mode Qwen Chat must be refused for the missing approval channel")
-	}
-	if missing := ports.MissingCapabilitiesForPermissions(caps, ports.PermissionModeBypassPermissions); len(missing) != 0 {
-		t.Fatalf("bypass Qwen Chat should admit cleanly; missing=%v", missing)
+	for _, permission := range []ports.PermissionMode{
+		ports.PermissionModeDefault,
+		ports.PermissionModeAcceptEdits,
+		ports.PermissionModeAuto,
+		ports.PermissionModeBypassPermissions,
+	} {
+		if missing := ports.MissingCapabilitiesForPermissions(caps, permission); len(missing) != 0 {
+			t.Fatalf("permission %q missing=%v, want none", permission, missing)
+		}
 	}
 }
 

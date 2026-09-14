@@ -30,12 +30,12 @@ func newDriver(plugin nativeacp.Plugin, probe nativeacp.VersionProbe, log *slog.
 		SessionOptions: sessionOptions,
 		VersionProbe:   probe,
 		Capabilities: ports.ChatCapabilities{
-			// Qwen Code's ACP mode ignores --approval-mode: it auto-executes tool
-			// calls and never sends session/request_permission, so a permission
-			// selector would carry a value the provider silently discards. Declare
-			// approvals unavailable, like piacp, so AO's production floor admits
-			// Qwen Chat only under the explicit bypass-permissions fallback.
-			ports.ChatCapabilityApprovals: false,
+			// Qwen Code's ACP mode enforces approval modes over the wire: a
+			// non-read-only shell under auto-edit emits
+			// session/request_permission (verified live on 0.23.4), so the
+			// permission selector carries a value the provider honors.
+			// Bypass still maps to yolo for users who want no prompts.
+			ports.ChatCapabilityApprovals: true,
 		},
 	}, log)
 }
@@ -50,11 +50,13 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 }
 
 // sessionMode maps AO's permission vocabulary onto Qwen Code's advertised ACP
-// mode ids (plan, default, auto-edit, auto, yolo). Empty leaves Qwen's own
-// default in place. Qwen advertises these both as session/set_mode ids and as
-// the "mode" config option.
+// mode ids (plan, default, auto-edit, auto, yolo). Qwen's out-of-the-box mode
+// is auto, so AO's default explicitly selects default (Ask Permissions) to get
+// supervised behavior instead of classifier auto-approval.
 func sessionMode(permission ports.PermissionMode) string {
 	switch ports.NormalizePermissionMode(permission) {
+	case ports.PermissionModeDefault:
+		return "default"
 	case ports.PermissionModeAcceptEdits:
 		return "auto-edit"
 	case ports.PermissionModeAuto:
