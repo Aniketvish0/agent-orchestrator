@@ -1420,9 +1420,8 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the button entirely rather than showing a permanently disabled control.
 	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
-	// A running terminal session cannot convert into Chat for harnesses without
-	// a declared TUI/Chat handoff (Qwen today): say so plainly instead of the
-	// daemon's identifier-heavy reason.
+	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
+	// session. Say so plainly instead of showing the daemon's reason.
 	const interfaceSwitchBlockedReason =
 		interfaceSwitch.status?.reasonCode === "INTERFACE_HANDOFF_UNSUPPORTED"
 			? t("session.interfaceHandoffUnsupported", {

@@ -166,11 +166,8 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	return cmd, true, nil
 }
 
-// NativeConversationID bridges Qwen's terminal session id and ACP session id.
-// Qwen persists both surfaces in the same chats store keyed by session UUID,
-// so a TUI source must have reported it through its hook before it can switch
-// without losing context. Verified live: session/load opens a TUI session id
-// over ACP and replays its transcript.
+// NativeConversationID bridges Qwen's terminal session id and ACP session id:
+// both surfaces share the chats store keyed by session UUID.
 func (p *Plugin) NativeConversationID(
 	ctx context.Context,
 	session ports.SessionRef,
@@ -188,10 +185,8 @@ func (p *Plugin) NativeConversationID(
 	return id, id != "", nil
 }
 
-// NativeConversationExists distinguishes a Qwen session UUID from one with a
-// persisted transcript. Qwen writes chats/<id>.jsonl under a project dir only
-// once the session has content; only non-empty transcripts count. Qwen remains
-// responsible for parsing its own provider state.
+// NativeConversationExists reports whether a Qwen session UUID has a
+// non-empty chats/<id>.jsonl transcript.
 func (p *Plugin) NativeConversationExists(
 	ctx context.Context,
 	_ ports.SessionRef,

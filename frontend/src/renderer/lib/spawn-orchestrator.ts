@@ -36,8 +36,7 @@ export function isChatPreflightCode(code?: string): boolean {
 }
 
 /** True when the daemon refused Chat only for the missing approvals channel
- *  and explicitly allows retrying without approvals. Mirrors the worker
- *  fallback in TaskComposer. */
+ *  and allows retrying without approvals. Mirrors the worker fallback. */
 export function canBypassOrchestratorApprovals(code?: string, details?: Record<string, unknown>): boolean {
 	if (code !== "SESSION_MODE_UNSUPPORTED" || !details) return false;
 	const has = (key: string, value: string) => {

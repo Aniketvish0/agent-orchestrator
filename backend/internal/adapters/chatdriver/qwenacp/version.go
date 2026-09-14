@@ -10,9 +10,7 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
-// minimumQwenVersion is the oldest Qwen Code build known to expose native ACP
-// as `qwen --acp`. Older builds either lacked ACP or only had the deprecated
-// `--experimental-acp` alias.
+// minimumQwenVersion is the oldest Qwen Code build with native `qwen --acp`.
 const minimumQwenVersion = "0.15.0"
 
 var versionPattern = regexp.MustCompile(`\b(\d+)\.(\d+)\.(\d+)\b`)

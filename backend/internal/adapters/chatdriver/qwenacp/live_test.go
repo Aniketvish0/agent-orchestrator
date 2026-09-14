@@ -135,8 +135,7 @@ func envMap() map[string]string {
 }
 
 // Run explicitly with AO_LIVE_QWEN_ACP=1. Pins the approval channel: a
-// non-read-only shell under auto-edit must raise an approval request instead
-// of auto-executing. Fails if a future Qwen build stops asking.
+// non-read-only shell under auto-edit must raise an approval request.
 func TestLiveQwenACPApprovalChannel(t *testing.T) {
 	if os.Getenv("AO_LIVE_QWEN_ACP") != "1" {
 		t.Skip("set AO_LIVE_QWEN_ACP=1 to run against the local Qwen Code account")
