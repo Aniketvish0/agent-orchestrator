@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,6 +35,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/google/uuid"
 )
 
 // Plugin is the Qwen Code agent adapter. It is safe for concurrent use; the
@@ -51,6 +53,8 @@ func New() *Plugin {
 
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
+var _ ports.AgentInterfaceHandoff = (*Plugin)(nil)
+var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 
 // GetConfigSpec reports the per-project agent config keys Qwen Code
 // understands.
@@ -160,6 +164,100 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	cmd = append(cmd, "--resume", agentSessionID)
 	return cmd, true, nil
+}
+
+// NativeConversationID bridges Qwen's terminal session id and ACP session id.
+// Qwen persists both surfaces in the same chats store keyed by session UUID,
+// so a TUI source must have reported it through its hook before it can switch
+// without losing context. Verified live: session/load opens a TUI session id
+// over ACP and replays its transcript.
+func (p *Plugin) NativeConversationID(
+	ctx context.Context,
+	session ports.SessionRef,
+	currentMode domain.SessionMode,
+	providerConversationID string,
+) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if currentMode == domain.SessionModeChat {
+		id := strings.TrimSpace(providerConversationID)
+		return id, id != "", nil
+	}
+	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
+	return id, id != "", nil
+}
+
+// NativeConversationExists distinguishes a Qwen session UUID from one with a
+// persisted transcript. Qwen writes chats/<id>.jsonl under a project dir only
+// once the session has content; only non-empty transcripts count. Qwen remains
+// responsible for parsing its own provider state.
+func (p *Plugin) NativeConversationExists(
+	ctx context.Context,
+	_ ports.SessionRef,
+	nativeConversationID string,
+	env map[string]string,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	id, valid := canonicalQwenSessionID(nativeConversationID)
+	if !valid {
+		return false, nil
+	}
+	qwenHome := strings.TrimSpace(env["QWEN_HOME"])
+	if qwenHome == "" {
+		qwenHome = strings.TrimSpace(os.Getenv("QWEN_HOME"))
+	}
+	if qwenHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false, fmt.Errorf("qwen: resolve chats root: %w", err)
+		}
+		qwenHome = filepath.Join(home, ".qwen")
+	}
+
+	found := false
+	projectsDir := filepath.Join(qwenHome, "projects")
+	err := filepath.WalkDir(projectsDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || !qwenTranscriptNameMatches(entry.Name(), id) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() && info.Size() > 0 {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("qwen: inspect chats root %s: %w", projectsDir, err)
+	}
+	return found, nil
+}
+
+func canonicalQwenSessionID(value string) (string, bool) {
+	parsed, err := uuid.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+func qwenTranscriptNameMatches(name, nativeConversationID string) bool {
+	return name == nativeConversationID+".jsonl"
 }
 
 // Qwen Code's append-system-prompt flag accepts inline text only. The manager
