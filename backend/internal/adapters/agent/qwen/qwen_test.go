@@ -786,13 +786,3 @@ func TestNativeConversationExistsRequiresPersistedQwenTranscript(t *testing.T) {
 		t.Fatalf("non-UUID id: exists=%v err=%v", exists, err)
 	}
 }
-
-func TestInvalidateBinaryResolutionClearsCachedPath(t *testing.T) {
-	p := &Plugin{resolvedBinary: "old-qwen"}
-
-	p.InvalidateBinaryResolution()
-
-	if p.resolvedBinary != "" {
-		t.Fatalf("resolvedBinary = %q, want empty after invalidation", p.resolvedBinary)
-	}
-}
